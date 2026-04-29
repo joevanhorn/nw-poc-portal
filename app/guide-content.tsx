@@ -144,6 +144,14 @@ This means even if a user has \`sfdc:write\` scope, FGA can block them from edit
 
 ---
 
+## Note on Backend Systems
+
+The Salesforce and ServiceNow instances are connected to the MCP Server via **API credentials only**. Human users do not log into these systems directly — all access is mediated through the AI agent via MCP tools.
+
+SSO for direct human access to Salesforce and ServiceNow is not configured in this environment. If you need direct SSO access for testing or validation, contact **Joe Van Horn** (joe.vanhorn@okta.com) to have it added.
+
+---
+
 ## Available MCP Tools (14 total)
 
 ### Salesforce (7 tools)
