@@ -10,27 +10,34 @@ export default async function Home() {
   }
 
   return (
-    <div className="min-h-screen bg-white">
-      <header className="border-b border-gray-200 bg-gray-50">
-        <div className="max-w-5xl mx-auto px-4 py-4 flex items-center justify-between">
-          <div>
-            <h1 className="text-lg font-semibold text-gray-900">
-              NW-POC MCP Demo Portal
-            </h1>
-            <p className="text-sm text-gray-500">
-              Signed in as {session.user?.email}
-            </p>
+    <div className="min-h-screen bg-gray-50">
+      <header className="border-b border-gray-200 bg-white shadow-sm sticky top-0 z-10">
+        <div className="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+              <span className="text-white font-bold text-sm">NW</span>
+            </div>
+            <div>
+              <h1 className="text-base font-semibold text-gray-900">
+                NW-POC MCP Demo
+              </h1>
+              <p className="text-xs text-gray-500">
+                {session.user?.email}
+              </p>
+            </div>
           </div>
           <a
             href="/api/auth/signout"
-            className="text-sm text-gray-500 hover:text-gray-700"
+            className="text-sm text-gray-400 hover:text-gray-600 transition-colors"
           >
             Sign out
           </a>
         </div>
       </header>
-      <main className="max-w-5xl mx-auto px-4 py-8">
-        <GuideContent />
+      <main className="max-w-4xl mx-auto px-6 py-8">
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 md:p-12">
+          <GuideContent />
+        </div>
       </main>
     </div>
   );

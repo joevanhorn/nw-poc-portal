@@ -173,7 +173,7 @@ The auth server uses [access policies](https://help.okta.com/oie/en-us/content/t
 
 export default function GuideContent() {
   return (
-    <article className="prose prose-gray max-w-none prose-headings:font-semibold prose-a:text-blue-600 prose-code:text-sm prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-gray-900 prose-pre:text-gray-100 prose-table:text-sm">
+    <article className="guide-content">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>
         {guideMarkdown}
       </ReactMarkdown>
