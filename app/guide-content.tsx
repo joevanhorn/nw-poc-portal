@@ -27,7 +27,7 @@ This environment demonstrates how [Okta secures AI agent access](https://help.ok
 | Service | URL | Purpose |
 |---------|-----|---------|
 | **MCP Adapter** | [nw-poc-adapter.supersafe-ai.io](https://nw-poc-adapter.supersafe-ai.io) | OAuth gateway — agents connect here |
-| **Admin UI** | [nw-poc-admin.supersafe-ai.io](https://nw-poc-admin.supersafe-ai.io) | Manage agents, resources, connections |
+| **Admin UI** | [nw-poc-admin.supersafe-ai.io](https://nw-poc-admin.supersafe-ai.io) | Manage agents, resources, connections (SSO for all org users) |
 | **MCP Server** | [nw-poc-mcp.supersafe-ai.io](https://nw-poc-mcp.supersafe-ai.io) | Backend tools (Salesforce + ServiceNow) |
 
 ---
@@ -52,6 +52,15 @@ Claude Code will:
 ### Option B: Any MCP-Compatible Agent
 
 Any agent that supports MCP over HTTP can connect to the adapter URL. The adapter supports Dynamic Client Registration, CIMD, and standard OAuth 2.0 PKCE.
+
+### Your Okta Dashboard
+
+Two apps are pre-configured on your Okta dashboard:
+
+- **MCP Demo - Setup Guide** — this page (SSO protected)
+- **MCP Adapter Admin** — the adapter management console (SSO for all org users)
+
+Both are accessible via single sign-on from your Okta dashboard at \`demo-nerdwallet-o4aa-poc.oktapreview.com\`.
 
 ---
 
@@ -96,8 +105,8 @@ Any agent that supports MCP over HTTP can connect to the adapter URL. The adapte
 
 ### Step 5: Verify in the Admin UI
 
-1. Navigate to [nw-poc-admin.supersafe-ai.io](https://nw-poc-admin.supersafe-ai.io)
-2. Log in with your Okta credentials
+1. Click **MCP Adapter Admin** from your Okta dashboard (or go to [nw-poc-admin.supersafe-ai.io](https://nw-poc-admin.supersafe-ai.io))
+2. SSO will log you in automatically — all users in this org have access
 3. Go to **Agents** and verify your agent appears
 4. Click **Sync All** to resolve managed connections
 
