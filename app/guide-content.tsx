@@ -103,6 +103,27 @@ Any agent that supports MCP over HTTP can connect to the adapter URL. The adapte
 
 ---
 
+## Pre-Configured User Access
+
+These users are pre-provisioned with varying access levels to demonstrate layered authorization:
+
+| User | Role | Okta Groups | FGA Team | Tools Visible | Account Ownership |
+|------|------|------------|----------|---------------|-------------------|
+| **jfoltz@nerdwallet.com** | Leadership | All 4 groups | leadership | All 14 (read + write) | Can view all accounts |
+| **ehansen@nerdwallet.com** | Sales Manager | CRM-Read, CRM-Write, ITSM-Read | west-enterprise | SFDC all + SNOW read | Owns Acme Corp, Pinnacle Financial |
+| **rtilney@nerdwallet.com** | Sales Rep | CRM-Read, CRM-Write | east-enterprise | SFDC all only | Owns Northstar Insurance, Meridian Healthcare |
+| **mlakin@nerdwallet.com** | Analyst | CRM-Read, ITSM-Read | product | Read-only (both) | Can view all accounts (no edit) |
+| **zparedes@nerdwallet.com** | New Hire | (none) | mid-market | **0 tools** | Owns Apex Manufacturing (in FGA, but no Okta scopes) |
+
+**Key demo points:**
+- **zparedes** has zero standing privilege — adding to groups instantly grants tools
+- **mlakin** can read but never sees write tools — scope filtering is invisible, not disabled
+- **ehansen** can write to SFDC but only read SNOW — cross-system scoping
+- **rtilney** has no ITSM access at all — ServiceNow tools are completely hidden
+- FGA adds per-resource checks: **ehansen** owns Acme Corp but NOT Northstar Insurance
+
+---
+
 ## Authorization Model
 
 The auth server uses [access policies](https://help.okta.com/oie/en-us/content/topics/security/api-config-access-policies.htm) to control which [scopes](https://help.okta.com/oie/en-us/content/topics/security/api-config-scopes.htm) are issued:
@@ -110,6 +131,16 @@ The auth server uses [access policies](https://help.okta.com/oie/en-us/content/t
 - **CRM-Write + ITSM-Write groups** → All scopes
 - **CRM-Read + ITSM-Read groups** → Read scopes only
 - **No groups** → No scopes → No tools visible
+
+### Layer 3: Okta FGA (Fine-Grained Authorization)
+
+Beyond scope-based filtering, [Okta FGA](https://docs.fga.dev/) provides per-resource authorization:
+
+- **Team membership** → determines which tools a user can invoke (read vs write)
+- **Account ownership** → sales reps can only modify accounts in their territory
+- **Incident assignment** → only the assigned engineer can update an incident
+
+This means even if a user has \`sfdc:write\` scope, FGA can block them from editing an account they don't own.
 
 ---
 
