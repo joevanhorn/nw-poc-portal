@@ -349,6 +349,251 @@ def list_tools(token_scopes):
 
 ---
 
+## Worked Example: Custom MCP Server for Google Workspace (Test OU)
+
+A concrete instantiation of the [custom MCP pattern above](#bringing-your-own-mcp-server-custom-tools). This walks through wiring a Google Workspace–backed MCP server into the same Okta-fronted adapter, scoped to a test OU, using **Workforce Identity Federation** so no long-lived service account keys are stored anywhere.
+
+### Architecture
+
+\`\`\`
+┌────────┐    ┌──────────────────┐    ┌──────────────────────┐    ┌─────────────────┐
+│ Claude │───▶│  NW-POC Adapter  │───▶│  GWS MCP Server      │───▶│  Google STS     │
+│        │    │  (Okta OAuth)    │    │  (ECS Fargate)       │    │  /v1/token      │
+└────────┘    └──────────────────┘    │                      │    └────────┬────────┘
+                                       │  - validates token   │             │ federated
+                                       │  - exchanges via STS │             │ token
+                                       │  - calls Google APIs │◀────────────┘
+                                       └──────────┬───────────┘
+                                                  │
+                                  ┌───────────────┴───────────────┐
+                                  ▼                               ▼
+                          ┌──────────────┐               ┌──────────────────┐
+                          │  Drive API   │               │  Calendar API    │
+                          │  (scoped to  │               │  (scoped to      │
+                          │  test OU)    │               │  test OU)        │
+                          └──────────────┘               └──────────────────┘
+\`\`\`
+
+The Okta access token issued by the NW-POC auth server is forwarded by the adapter, exchanged at Google STS for a short-lived federated token, and used to call Google APIs as the user — with IAM bindings scoping each user to resources their test-OU identity is allowed to touch.
+
+> **Important caveat:** Workforce Identity Federation grants access to **Google Cloud + data-plane APIs (Drive, Calendar, Sheets, BigQuery, etc.)**. It does NOT grant **Admin SDK** privileges (user/group management). If the customer wants admin operations later, the federated principal also needs a Workspace admin role bound in Admin Console → Account → Admin roles. See [Extending to Admin SDK](#extending-to-admin-sdk) at the end.
+
+---
+
+### Part 1: Google Workspace prep
+
+1. **Sign in** to [admin.google.com](https://admin.google.com) as a super admin
+2. **Directory → Organizational units → Create organizational unit**
+   - **Name:** \`Test-MCP-OU\`
+   - **Parent:** root OU
+3. **Provision test users** into that OU. Either:
+   - Manually: Directory → Users → Add new user, set **Organizational unit** to \`/Test-MCP-OU\`
+   - Via Okta provisioning: in the Okta admin console, configure the **Google Workspace** app integration to map a test group to the \`Test-MCP-OU\` Organizational Unit (Provisioning → To App → Organizational Unit)
+
+---
+
+### Part 2: GCP — Workforce Identity Federation
+
+1. **Create a GCP project** (or reuse an existing one) and enable these APIs:
+   - **IAM Credentials API** (\`iamcredentials.googleapis.com\`)
+   - **Security Token Service API** (\`sts.googleapis.com\`)
+   - Any data-plane APIs the demo needs: **Admin SDK** (\`admin.googleapis.com\`), **Drive** (\`drive.googleapis.com\`), **Calendar** (\`calendar.googleapis.com\`), etc.
+
+   \`\`\`bash
+   gcloud config set project <PROJECT_ID>
+   gcloud services enable iamcredentials.googleapis.com sts.googleapis.com \\
+     drive.googleapis.com calendar.googleapis.com
+   \`\`\`
+
+2. **Create a Workforce Identity Pool.** The pool is the trust boundary that holds external identities. Workforce pools live at the **organization level** (not the project level) — you need an Organization in GCP and \`roles/iam.workforcePoolAdmin\` on it.
+
+   \`\`\`bash
+   gcloud iam workforce-pools create nw-poc-pool \\
+     --location=global \\
+     --organization=<ORG_ID> \\
+     --display-name="NW-POC Workforce Pool"
+   \`\`\`
+
+3. **Add Okta as an OIDC provider** for the pool. Use the NW-POC auth server's issuer URL — it issues JWT access tokens, which is what STS exchanges.
+
+   \`\`\`bash
+   gcloud iam workforce-pools providers create-oidc okta-nw-poc \\
+     --workforce-pool=nw-poc-pool \\
+     --location=global \\
+     --issuer-uri="https://demo-nerdwallet-o4aa-poc.oktapreview.com/oauth2/ausy6l45lqufRf8oB1d7" \\
+     --client-id="<NW-POC adapter client_id from the OIDC app>" \\
+     --attribute-mapping="google.subject=assertion.sub,google.groups=assertion.groups,attribute.email=assertion.email,attribute.scope=assertion.scp" \\
+     --attribute-condition="assertion.scp.exists(s, s == 'gws:read' || s == 'gws:write')"
+   \`\`\`
+
+   The \`attribute-condition\` is the **first defense layer** — it rejects any token at STS that doesn't carry the right Okta scopes, before IAM bindings even apply.
+
+4. **Bind IAM roles to the federated principalSet.** Limit access to resources the test OU should touch. Example: grant read access to a specific shared drive that holds the test OU's documents.
+
+   \`\`\`bash
+   gcloud iam workforce-pools workforce-pool-providers add-iam-policy-binding \\
+     # ... or directly on the resource:
+   gcloud projects add-iam-policy-binding <PROJECT_ID> \\
+     --role="roles/drive.fileMetadataReader" \\
+     --member="principalSet://iam.googleapis.com/locations/global/workforcePools/nw-poc-pool/group/test-mcp-users"
+   \`\`\`
+
+   The \`principalSet://\` URI shape lets you bind by attribute (group, email, custom claim). Pattern variants:
+   - \`principal://...workforcePools/nw-poc-pool/subject/<okta-user-sub>\` — single user
+   - \`principalSet://...workforcePools/nw-poc-pool/group/<group-id>\` — by Okta group claim
+   - \`principalSet://...workforcePools/nw-poc-pool/attribute.email/jane@nerdwallet.com\` — by mapped attribute
+
+---
+
+### Part 3: Okta side
+
+1. **Verify the auth server issues JWT access tokens.** In **Security → API → Authorization Servers → NW-POC MCP Adapter Auth Server → Settings**, confirm token type is JWT (not opaque). STS rejects opaque tokens.
+
+2. **Add new scopes** (Security → API → Authorization Servers → \<server\> → Scopes):
+   - \`gws:read\` — read Workspace data (Drive, Calendar, etc.)
+   - \`gws:write\` — write Workspace data
+
+3. **Create groups** (Directory → Groups → Add Group):
+   - \`NW-POC-GWS-Read\`
+   - \`NW-POC-GWS-Write\`
+
+4. **Add a custom claim** to surface group membership in the token (so STS can map it to the federated principal):
+
+   - Auth server → **Claims → Add Claim**
+   - Name: \`groups\`
+   - Include in: **Access Token**
+   - Value type: **Groups**
+   - Filter: \`Matches regex\` → \`^NW-POC-GWS-.*$\`
+
+5. **Update the access policy** to grant the new scopes only when the user is in the matching group. Edit the existing rule (or add a new one) so \`gws:read\` requires \`NW-POC-GWS-Read\` group, and \`gws:write\` requires \`NW-POC-GWS-Write\`.
+
+---
+
+### Part 4: MCP server skeleton (Node.js)
+
+Minimal HTTP MCP server that performs STS exchange and serves Drive tools. Place this in a new ECR repo \`nw-poc-mcp-gws\`.
+
+\`\`\`typescript
+// src/server.ts
+import express from "express";
+import { GoogleAuth } from "google-auth-library";
+import { drive_v3, calendar_v3, google } from "googleapis";
+
+const app = express();
+app.use(express.json());
+
+// Exchange the inbound Okta JWT for a Google federated access token
+async function getGoogleAuthForUser(oktaJwt: string) {
+  const auth = new GoogleAuth({
+    credentials: {
+      type: "external_account",
+      audience: "//iam.googleapis.com/locations/global/workforcePools/nw-poc-pool/providers/okta-nw-poc",
+      subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
+      token_url: "https://sts.googleapis.com/v1/token",
+      credential_source: { url: "in-memory" }, // overridden via subjectTokenSupplier
+      workforce_pool_user_project: process.env.GCP_PROJECT_ID!,
+    } as any,
+    // google-auth-library 9.x supports subjectTokenSupplier on the external_account client
+  });
+  // Pseudo-API: bind the inbound JWT as the subject token for this client
+  (auth as any).subjectTokenSupplier = async () => oktaJwt;
+  return auth;
+}
+
+// Tool registry — scope-filtered, like the other backends
+const ALL_TOOLS = [
+  { name: "gws_list_drive_files", scope: "gws:read",  fn: listDriveFiles },
+  { name: "gws_get_drive_file",   scope: "gws:read",  fn: getDriveFile },
+  { name: "gws_list_calendars",   scope: "gws:read",  fn: listCalendars },
+  { name: "gws_create_event",     scope: "gws:write", fn: createEvent },
+];
+
+function tokenScopes(jwt: string): Set<string> {
+  const payload = JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString());
+  return new Set((payload.scp || []) as string[]);
+}
+
+app.post("/mcp/tools/list", (req, res) => {
+  const jwt = req.headers.authorization!.replace(/^Bearer /, "");
+  const scopes = tokenScopes(jwt);
+  res.json({ tools: ALL_TOOLS.filter(t => scopes.has(t.scope)).map(t => ({ name: t.name })) });
+});
+
+app.post("/mcp/tools/call", async (req, res) => {
+  const jwt = req.headers.authorization!.replace(/^Bearer /, "");
+  const scopes = tokenScopes(jwt);
+  const { name, arguments: args } = req.body;
+  const tool = ALL_TOOLS.find(t => t.name === name);
+  if (!tool || !scopes.has(tool.scope)) return res.status(403).json({ error: "denied" });
+  const auth = await getGoogleAuthForUser(jwt);
+  res.json(await tool.fn(auth, args));
+});
+
+async function listDriveFiles(auth: any, args: { q?: string }) {
+  const drive = google.drive({ version: "v3", auth });
+  const r = await drive.files.list({ q: args.q, pageSize: 25, fields: "files(id,name,mimeType,modifiedTime)" });
+  return { files: r.data.files };
+}
+
+// ... getDriveFile, listCalendars, createEvent follow the same pattern
+
+app.get("/health", (_, res) => res.status(200).send("ok"));
+app.listen(3000);
+\`\`\`
+
+> The MCP HTTP transport spec is more involved than the snippet above — this is the auth + scope-filtering shape. Use the official [TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk) for the full transport.
+
+---
+
+### Part 5: Deploy to the same ECS cluster
+
+Follow the [Custom MCP backend pattern](#bringing-your-own-mcp-server-custom-tools) above. The Workspace-specific bits:
+
+1. **Add Terraform** at \`environments/nw-poc/terraform/mcp_server_gws.tf\` — ECR repo, ECS task definition, target group, ALB listener rule on \`nw-poc-mcp-gws.supersafe-ai.io\`, ACM cert, Route53 record, ECS service
+2. **Task definition env vars:**
+   \`\`\`hcl
+   environment = [
+     { name = "PORT",            value = "3000" },
+     { name = "SERVICE_API_KEY", value = random_password.mcp_api_key.result },
+     { name = "GCP_PROJECT_ID",  value = "<your-gcp-project-id>" },
+     { name = "GCP_WORKFORCE_POOL_PROVIDER",
+       value = "projects/<PROJECT_NUMBER>/locations/global/workforcePools/nw-poc-pool/providers/okta-nw-poc" },
+   ]
+   \`\`\`
+   No service account key file. The MCP server uses the inbound Okta JWT as the subject token for STS — credentials never sit on disk.
+3. **Register with the adapter** by extending env vars on \`aws_ecs_task_definition.mcp_adapter\`:
+   \`\`\`hcl
+   { name = "CIMD_TRUSTED_BACKEND_ACCESS", value = "\${var.prefix}-tools,\${var.prefix}-gws" },
+   { name = "BACKEND_GWS_URL",             value = "https://\${var.prefix}-mcp-gws.\${var.domain_name}" },
+   { name = "BACKEND_GWS_API_KEY",         value = random_password.mcp_api_key.result },
+   \`\`\`
+
+---
+
+### Part 6: Test plan
+
+1. **Add a test user to \`Test-MCP-OU\`** in Workspace (manual or via Okta provisioning)
+2. **Add the same user (Okta account) to \`NW-POC-GWS-Read\`** in Okta
+3. **Reconnect Claude** (Claude Code, Claude.ai personal, or Claude for Work — all of them) — sign out and back in to pick up the new scopes
+4. **List tools** — the user should now see the \`gws_*\` read tools alongside any SFDC/SNOW tools they already had
+5. **Run \`gws_list_drive_files\`** — should return only files the test-OU user has access to in Drive. Files outside the OU's access boundary are silently filtered by Drive's own ACLs.
+6. **Negative test:** remove the user from \`NW-POC-GWS-Read\`. The next \`tools/list\` call hides the \`gws_*\` tools entirely. If a stale agent attempts \`tools/call\`, the MCP server rejects with 403 because the new token no longer carries \`gws:read\`.
+
+---
+
+### Extending to Admin SDK
+
+If the customer later wants user/group management (suspend a user, list group members, move a user between OUs), Workforce Identity Federation alone is not enough — Admin SDK requires Workspace admin privileges.
+
+Two options:
+
+1. **Bind a custom Workspace admin role to the federated user.** In Admin Console → **Account → Admin roles → Create new role**, scope privileges to the test OU only (User Management Admin → Restrict to OU \`Test-MCP-OU\`). Assign the role to each test user. When that user's Okta token is exchanged at STS, the resulting federated identity carries the Workspace admin role, and Admin SDK calls succeed within the OU scope.
+2. **Add a service-account fallback** for admin operations only. Keep WIF for data APIs; provision a service account with Domain-Wide Delegation impersonating a Workspace admin restricted to the OU. The MCP server picks the auth path per-tool: data tools use WIF, admin tools use DWD. Less clean (a long-lived key reappears) but works without changing per-user Admin Console assignments.
+
+The clean answer is option 1 — extend the same federated identity model — once the customer commits to specific admin operations.
+
+---
+
 ## Available MCP Tools (14 total)
 
 ### Salesforce (7 tools)
